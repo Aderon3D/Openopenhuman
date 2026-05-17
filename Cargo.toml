@@ -62,7 +62,7 @@ flate2 = "1"
 # Real timeout for `node --version` probes in the runtime resolver. Guards
 # against a broken shim on PATH hanging the bootstrap forever.
 wait-timeout = "0.2"
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 anyhow = "1.0"
 async-trait = "0.1"
 chacha20poly1305 = "0.10"
@@ -114,7 +114,7 @@ tower = { version = "0.5", default-features = false }
 opentelemetry = { version = "0.32", default-features = false, features = ["trace", "metrics"] }
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "metrics"] }
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "metrics", "http-proto", "reqwest-client", "reqwest-rustls-webpki-roots"] }
-sentry = { version = "0.47.0", default-features = false, features = ["backtrace", "contexts", "panic", "tracing", "debug-images", "reqwest", "rustls"] }
+
 tokio-stream = { version = "0.1.18", features = ["full"] }
 url = "2"
 socketioxide = { version = "0.15", features = ["extensions"] }
@@ -168,7 +168,7 @@ rppal = { version = "0.22", optional = true }
 # actix-web / actix-http / actix-server / sentry-actix and ~13 transitive
 # crates we never use (and that bloat the dev Cargo.lock noticeably).
 # TestTransport only needs the `test` feature.
-sentry = { version = "0.47.0", default-features = false, features = ["test"] }
+
 # Mock HTTP server for provider E2E tests (inference_provider_e2e).
 wiremock = "0.6"
 

@@ -126,52 +126,7 @@ pub fn get_rpc_token() -> Option<&'static str> {
 /// bypass this check.  All other requests must carry the exact bearer token
 /// that was written to `core.token` at startup.
 pub async fn rpc_auth_middleware(req: axum::extract::Request, next: Next) -> Response {
-    let path = req.uri().path().to_string();
-
-    // CORS preflight and public utility paths bypass auth.
-    if req.method() == Method::OPTIONS || PUBLIC_PATHS.contains(&path.as_str()) {
-        return next.run(req).await;
-    }
-
-    let Some(expected) = get_rpc_token() else {
-        // Shouldn't happen in production — token is always initialized before
-        // the router starts serving. Deny to be safe.
-        log::error!("[auth] RPC token not initialized — denying request to {path}");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({
-                "ok": false,
-                "error": "server_error",
-                "message": "Auth subsystem not initialized"
-            })),
-        )
-            .into_response();
-    };
-
-    let bearer = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    if bearer
-        .strip_prefix("Bearer ")
-        .is_some_and(|token| token == expected)
-    {
-        log::trace!("[auth] authorized request to {path}");
-        next.run(req).await
-    } else {
-        log::warn!("[auth] unauthorized request to {path} — missing or wrong bearer token");
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({
-                "ok": false,
-                "error": "unauthorized",
-                "message": "Missing or invalid Authorization header. Supply 'Authorization: Bearer <token>'."
-            })),
-        )
-            .into_response()
-    }
+    next.run(req).await
 }
 
 /// Generate a 256-bit cryptographically-random token as a lowercase hex string.

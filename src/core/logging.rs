@@ -189,7 +189,6 @@ pub fn init_for_cli_run(verbose: bool, default_scope: CliLogDefault) {
         let _ = tracing_subscriber::registry()
             .with(filter)
             .with(fmt_layer)
-            .with(sentry_tracing_layer())
             .try_init();
 
         // Bridge the `log` crate.
@@ -284,7 +283,6 @@ pub fn init_for_embedded(data_dir: &Path, verbose: bool) {
             .with(filter)
             .with(stderr_layer)
             .with(file_layer)
-            .with(sentry_tracing_layer())
             .try_init()
         {
             Ok(()) => {
@@ -349,25 +347,7 @@ fn build_env_filter(verbose: bool, default_scope: CliLogDefault) -> tracing_subs
     })
 }
 
-fn sentry_tracing_layer<S>() -> impl Layer<S>
-where
-    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
-{
-    sentry::integrations::tracing::layer().event_filter(|md: &tracing::Metadata<'_>| {
-        // Events emitted from `report_error_message` are captured directly via
-        // `sentry::capture_message` at the call site (see
-        // `core::observability::REPORT_ERROR_TRACING_TARGET` for rationale).
-        // Skip them here so we don't double-report.
-        if md.target() == crate::core::observability::REPORT_ERROR_TRACING_TARGET {
-            return sentry::integrations::tracing::EventFilter::Ignore;
-        }
-        match *md.level() {
-            Level::ERROR => sentry::integrations::tracing::EventFilter::Event,
-            Level::WARN | Level::INFO => sentry::integrations::tracing::EventFilter::Breadcrumb,
-            _ => sentry::integrations::tracing::EventFilter::Ignore,
-        }
-    })
-}
+
 
 #[cfg(test)]
 mod tests {

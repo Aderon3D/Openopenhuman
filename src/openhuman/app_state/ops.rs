@@ -448,18 +448,7 @@ pub async fn snapshot() -> Result<RpcOutcome<AppStateSnapshot>, String> {
     let config = config_rpc::load_config_with_timeout().await?;
     let mut auth = build_session_state(&config)?;
     let session_token = get_session_token(&config)?;
-    let stored_user = sanitize_snapshot_user(auth.user.clone());
-    let current_user = if let Some(token) = session_token.clone().filter(|t| !t.trim().is_empty()) {
-        match fetch_current_user_cached(&config, &token).await {
-            Ok(fresh_user) => fresh_user.or(stored_user.clone()),
-            Err(error) => {
-                warn!("{LOG_PREFIX} current user refresh failed; using stored snapshot fallback: {error}");
-                stored_user.clone()
-            }
-        }
-    } else {
-        stored_user.clone()
-    };
+    let current_user = sanitize_snapshot_user(auth.user.clone());
     auth.user = current_user.clone();
     let local_state = load_stored_app_state(&config)?;
     let runtime = build_runtime_snapshot(&config).await;

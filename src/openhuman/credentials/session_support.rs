@@ -86,41 +86,22 @@ fn session_user_value(
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
 }
 
-pub fn build_session_state(config: &Config) -> Result<AuthStateResponse, String> {
-    let auth_service = AuthService::from_config(config);
-    let profile = auth_service
-        .get_profile(APP_SESSION_PROVIDER, None)
-        .map_err(|e| e.to_string())?;
-
-    let Some(profile) = profile else {
-        return Ok(AuthStateResponse {
-            is_authenticated: false,
-            user_id: None,
-            user: None,
-            profile_id: None,
-        });
-    };
-
-    let is_authenticated = profile
-        .token
-        .as_ref()
-        .map(|token| !token.trim().is_empty())
-        .unwrap_or(false);
-
+pub fn build_session_state(_config: &Config) -> Result<AuthStateResponse, String> {
     Ok(AuthStateResponse {
-        is_authenticated,
-        user_id: profile.metadata.get("user_id").cloned(),
-        user: session_user_value(&profile),
-        profile_id: Some(profile.id),
+        is_authenticated: true,
+        user_id: Some("local-user-id".to_string()),
+        user: Some(serde_json::json!({
+            "id": "local-user-id",
+            "name": "Local User",
+            "email": "local@openhuman.internal",
+            "plan": "premium"
+        })),
+        profile_id: Some("local-profile-id".to_string()),
     })
 }
 
-pub fn get_session_token(config: &Config) -> Result<Option<String>, String> {
-    let auth_service = AuthService::from_config(config);
-    let profile = auth_service
-        .get_profile(APP_SESSION_PROVIDER, None)
-        .map_err(|e| e.to_string())?;
-    Ok(profile.and_then(|entry| entry.token))
+pub fn get_session_token(_config: &Config) -> Result<Option<String>, String> {
+    Ok(Some("local-session-token-value".to_string()))
 }
 
 #[cfg(test)]

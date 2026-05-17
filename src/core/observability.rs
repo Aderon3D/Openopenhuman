@@ -586,139 +586,16 @@ pub(crate) fn report_error_message(
     operation: &str,
     extra: &[Tag<'_>],
 ) {
-    sentry::with_scope(
-        |scope| {
-            scope.set_tag("domain", domain);
-            scope.set_tag("operation", operation);
-            for (k, v) in extra {
-                scope.set_tag(k, v);
-            }
-        },
-        || {
-            // Direct, synchronous Sentry capture — see
-            // `REPORT_ERROR_TRACING_TARGET` for why we don't rely on the
-            // `sentry-tracing` layer for this call site.
-            sentry::capture_message(message, sentry::Level::Error);
-            // Diagnostic log line for stderr / file appenders. Tagged with
-            // the marker target so the production sentry-tracing layer
-            // skips it (no double Sentry event).
-            tracing::error!(
-                target: REPORT_ERROR_TRACING_TARGET,
-                domain = domain,
-                operation = operation,
-                error = %message,
-                "[observability] {domain}.{operation} failed: {message}"
-            );
-        },
+    // Sentry has been completely disabled and removed.
+    // We log the error using standard tracing.
+    tracing::error!(
+        target: REPORT_ERROR_TRACING_TARGET,
+        domain = domain,
+        operation = operation,
+        extra = ?extra,
+        error = %message,
+        "[observability] {domain}.{operation} failed: {message}"
     );
-}
-
-/// Returns true when a Sentry event is a per-attempt provider HTTP failure
-/// that the reliable-provider layer already handles via retry + fallback.
-///
-/// The primary suppression lives at the call site
-/// (`openhuman::inference::provider::ops::should_report_provider_http_failure`),
-/// which short-circuits transient codes before `report_error` ever fires.
-/// This helper is intended for use inside the `sentry::ClientOptions`
-/// `before_send` hook as defense-in-depth — it catches any future call
-/// site that emits a `tracing::error!` with the same shape but bypasses
-/// the classifier.
-///
-/// Match criteria (all required):
-/// - tag `domain == "llm_provider"` — pins the filter to provider-originated
-///   events so an unrelated subsystem emitting `failure=non_2xx`/`status=503`
-///   for its own reasons doesn't get silently dropped
-/// - tag `failure == "non_2xx"` (the marker set by `ops::api_error`)
-/// - tag `status` parses to one of [`TRANSIENT_PROVIDER_HTTP_STATUSES`]
-pub fn is_transient_provider_http_failure(event: &sentry::protocol::Event<'_>) -> bool {
-    let tags = &event.tags;
-    if tags.get("domain").map(String::as_str) != Some("llm_provider") {
-        return false;
-    }
-    if tags.get("failure").map(String::as_str) != Some("non_2xx") {
-        return false;
-    }
-    let Some(status_u16) = tags.get("status").and_then(|s| s.parse::<u16>().ok()) else {
-        return false;
-    };
-    TRANSIENT_PROVIDER_HTTP_STATUSES.contains(&status_u16)
-}
-
-/// Returns true when a Sentry event's message/exception text contains the
-/// canonical max-tool-iterations cap phrase (see
-/// `openhuman::agent::error::MAX_ITERATIONS_ERROR_PREFIX`).
-///
-/// Defense-in-depth filter for the Sentry `before_send` hook: the primary
-/// suppression lives at the call sites in `agent::harness::session::
-/// runtime::run_single`, `channels::runtime::dispatch`, and
-/// `channels::providers::web::run_chat_task`, all of which now skip
-/// `report_error` when this variant is detected. This filter catches any
-/// future call site that re-emits the message without going through those
-/// funnels — e.g. a new wrapper that calls `tracing::error!` directly with
-/// the typed error rendering — and keeps OPENHUMAN-TAURI-99 / -98
-/// permanently off Sentry without requiring touch-ups at each new site.
-///
-/// Match strategy: scans `event.message` first (the path used by
-/// `report_error_message` → `sentry::capture_message`) and falls back to
-/// the last exception's `value` (the shape `sentry-tracing` produces when
-/// stacktraces are attached). Both fields are checked for the canonical
-/// prefix so the filter stays robust to future Sentry plumbing changes.
-pub fn is_max_iterations_event(event: &sentry::protocol::Event<'_>) -> bool {
-    let direct = event.message.as_deref();
-    let from_exception = event.exception.last().and_then(|e| e.value.as_deref());
-    [direct, from_exception]
-        .into_iter()
-        .flatten()
-        .any(crate::openhuman::agent::error::is_max_iterations_error)
-}
-
-/// Tag + body classifier for the `before_send` chain — drops Sentry events
-/// emitted at the OpenHuman backend / rpc layers for "401 Session
-/// expired" or the pre-flight "no session token stored" guards.
-///
-/// Pairs with [`is_session_expired_message`] (which classifies the
-/// message body at the emit site via `report_error_or_expected`). This
-/// fn runs in `before_send` so it catches any future call site that
-/// re-emits the same shape without routing through the classifier —
-/// keeps OPENHUMAN-TAURI-25 / -1Q / -27 / -1G permanently off Sentry
-/// (~185 events/day combined).
-///
-/// Scope: only the three domains that surface session-expired today
-/// (`llm_provider`, `backend_api`, `rpc`). Composio's OAuth-state 401
-/// is excluded — that's actionable and must reach Sentry.
-pub fn is_session_expired_event(event: &sentry::protocol::Event<'_>) -> bool {
-    let tags = &event.tags;
-    let Some(domain) = tags.get("domain").map(String::as_str) else {
-        return false;
-    };
-    if !matches!(domain, "llm_provider" | "backend_api" | "rpc") {
-        return false;
-    }
-
-    let status_is_401 = tags
-        .get("status")
-        .and_then(|s| s.parse::<u16>().ok())
-        .is_some_and(|code| code == 401);
-
-    let direct = event.message.as_deref();
-    let from_exception = event.exception.last().and_then(|e| e.value.as_deref());
-    let body_matches = [direct, from_exception]
-        .into_iter()
-        .flatten()
-        .any(is_session_expired_message);
-
-    if status_is_401 && body_matches {
-        return true;
-    }
-
-    // Pre-flight rpc guard has no status tag — accept on body alone,
-    // scoped to the rpc dispatcher (other domains don't emit the
-    // "no session token stored" sentinel).
-    if domain == "rpc" && body_matches {
-        return true;
-    }
-
-    false
 }
 
 pub fn is_transient_http_status(status: &str) -> bool {
@@ -746,114 +623,6 @@ pub fn is_updater_transient_message(message: &str) -> bool {
     UPDATER_TRANSIENT_MESSAGE_PHRASES
         .iter()
         .any(|phrase| lower.contains(phrase))
-}
-
-fn event_has_transient_transport_phrase(event: &sentry::protocol::Event<'_>) -> bool {
-    event
-        .message
-        .as_deref()
-        .is_some_and(contains_transient_transport_phrase)
-        || event
-            .logentry
-            .as_ref()
-            .is_some_and(|log| contains_transient_transport_phrase(&log.message))
-        || event.exception.values.iter().any(|exception| {
-            exception
-                .value
-                .as_deref()
-                .is_some_and(contains_transient_transport_phrase)
-        })
-}
-
-fn event_has_updater_transient_message(event: &sentry::protocol::Event<'_>) -> bool {
-    event
-        .message
-        .as_deref()
-        .is_some_and(is_updater_transient_message)
-        || event
-            .logentry
-            .as_ref()
-            .is_some_and(|log| is_updater_transient_message(&log.message))
-        || event.exception.values.iter().any(|exception| {
-            exception
-                .value
-                .as_deref()
-                .is_some_and(is_updater_transient_message)
-        })
-}
-
-fn event_has_updater_domain(event: &sentry::protocol::Event<'_>) -> bool {
-    matches!(
-        event.tags.get("domain").map(String::as_str),
-        Some("update") | Some("update.check_releases") | Some("updater")
-    )
-}
-
-fn is_transient_domain_failure(event: &sentry::protocol::Event<'_>, domain: &str) -> bool {
-    let tags = &event.tags;
-    if tags.get("domain").map(String::as_str) != Some(domain) {
-        return false;
-    }
-
-    match tags.get("failure").map(String::as_str) {
-        Some("non_2xx") => tags
-            .get("status")
-            .is_some_and(|status| is_transient_http_status(status)),
-        Some("transport") => event_has_transient_transport_phrase(event),
-        _ => false,
-    }
-}
-
-/// Transient backend API failures (gateway hiccups, scheduled downtime).
-/// Match by event tags written by report_error at the authed_json call site.
-pub fn is_transient_backend_api_failure(event: &sentry::protocol::Event<'_>) -> bool {
-    is_transient_domain_failure(event, "backend_api")
-}
-
-/// Transient integrations / Composio failures (timeout, connection reset,
-/// gateway hiccups).
-///
-/// Accepts both `domain="integrations"` (the shared
-/// [`crate::openhuman::integrations::IntegrationClient`] HTTP wrapper that
-/// fronts every backend-proxied integration) and `domain="composio"` (errors
-/// reported from the Composio op layer in
-/// [`crate::openhuman::composio::ops`]). Composio routes through the same
-/// `IntegrationClient`, so the failure shape is identical — but op-level
-/// reporters that wrap and re-emit those errors with their own domain tag
-/// would otherwise escape the integrations-scoped filter (OPENHUMAN-TAURI-35
-/// ~139ev, -2H ~26ev: `[composio] list_connections failed: Backend returned
-/// 502 …` events that landed in Sentry under `domain=composio`).
-pub fn is_transient_integrations_failure(event: &sentry::protocol::Event<'_>) -> bool {
-    is_transient_domain_failure(event, "integrations")
-        || is_transient_domain_failure(event, "composio")
-}
-
-/// Transient updater failures from GitHub release probes/downloads.
-///
-/// Core-side reports carry structured tags (`domain=update`, often
-/// `operation=check_releases`, plus `failure/status`). Tauri's updater plugin
-/// can also emit message-only events such as
-/// `"failed to check for updates: error sending request for url (...latest.json)"`.
-/// Match both shapes, but never drop an arbitrary update-domain event unless
-/// it also has a transient status/transport marker.
-pub fn is_updater_transient_event(event: &sentry::protocol::Event<'_>) -> bool {
-    if event_has_updater_transient_message(event) {
-        return true;
-    }
-
-    if !event_has_updater_domain(event) {
-        return false;
-    }
-
-    match event.tags.get("failure").map(String::as_str) {
-        Some("non_2xx") => event
-            .tags
-            .get("status")
-            .and_then(|status| status.parse::<u16>().ok())
-            .is_some_and(is_updater_transient_http_status),
-        Some("transport") => event_has_transient_transport_phrase(event),
-        _ => false,
-    }
 }
 
 /// String tokens that mark a formatted error message as a transient HTTP
@@ -890,47 +659,6 @@ pub fn is_transient_message_failure(msg: &str) -> bool {
         .iter()
         .any(|token| lower.contains(token))
         || contains_transient_transport_phrase(&lower)
-}
-
-/// Returns true when a Sentry event is a budget-exhausted 400 that should be
-/// dropped from `before_send`.
-///
-/// Match criteria (all required):
-/// - tag `failure == "non_2xx"`
-/// - tag `status == "400"`
-/// - the event message or any exception value contains one of the tight
-///   budget-exhaustion phrases
-///
-/// Note: `domain` is intentionally not gated here as defense-in-depth over
-/// the emit-site classifier — any non_2xx/400 event that carries the
-/// budget-exhausted phrasing is dropped regardless of which domain produced
-/// it, so a future re-emitter under a different tag still gets filtered.
-pub fn is_budget_event(event: &sentry::protocol::Event<'_>) -> bool {
-    let tags = &event.tags;
-    if tags.get("failure").map(String::as_str) != Some("non_2xx") {
-        return false;
-    }
-    if tags.get("status").map(String::as_str) != Some("400") {
-        return false;
-    }
-    event_contains_budget_exhausted_message(event)
-}
-
-fn event_contains_budget_exhausted_message(event: &sentry::protocol::Event<'_>) -> bool {
-    if event
-        .message
-        .as_deref()
-        .is_some_and(crate::openhuman::inference::provider::is_budget_exhausted_message)
-    {
-        return true;
-    }
-
-    event.exception.values.iter().any(|exception| {
-        exception
-            .value
-            .as_deref()
-            .is_some_and(crate::openhuman::inference::provider::is_budget_exhausted_message)
-    })
 }
 
 #[cfg(test)]
@@ -1577,6 +1305,36 @@ mod tests {
     }
 
     #[test]
+    fn does_not_classify_unrelated_messages_as_provider_user_state() {
+        // Bare numeric 401 (port number, runbook reference) must not be
+        // silenced.
+        assert_eq!(
+            expected_error_kind("Backend returned 500 Internal Server Error for POST \
+                 /agent-integrations/composio/triggers: random panic in handler"),
+            None
+        );
+        assert_eq!(
+            expected_error_kind(
+                "Backend returned 500 Internal Server Error for GET /teams: database connection lost"
+            ),
+            None
+        );
+
+        // Free-form text that mentions "not found" / "is not enabled" out
+        // of context must not be silenced.
+        assert_eq!(
+            expected_error_kind("file not found at /tmp/x.json"),
+            None,
+            "bare 'not found' without 'trigger type' anchor must NOT classify"
+        );
+        assert_eq!(
+            expected_error_kind("the cache is not enabled in this build"),
+            None,
+            "bare 'is not enabled' without 'toolkit ' anchor must NOT classify"
+        );
+    }
+
+    #[test]
     fn does_not_classify_unrelated_messages_as_binary_missing() {
         // Pin the anchor: messages that talk about binaries in a
         // different context (download failures, version mismatches)
@@ -1681,6 +1439,11 @@ mod tests {
             expected_error_kind("see runbook for 401 handling at https://example.com/401"),
             None
         );
+        assert_eq!(
+            expected_error_kind("file not found at /tmp/x.json"),
+            None,
+            "bare 'not found' without 'trigger type' anchor must NOT classify"
+        );
         // Provider 5xx — must reach Sentry.
         assert_eq!(
             expected_error_kind("OpenAI API error (500): internal server error"),
@@ -1703,427 +1466,6 @@ mod tests {
         );
     }
 
-    fn event_with_tags(pairs: &[(&str, &str)]) -> sentry::protocol::Event<'static> {
-        let mut event = sentry::protocol::Event::default();
-        let mut tags: std::collections::BTreeMap<String, String> =
-            std::collections::BTreeMap::new();
-        for (k, v) in pairs {
-            tags.insert((*k).to_string(), (*v).to_string());
-        }
-        event.tags = tags;
-        event
-    }
-
-    fn event_with_tags_and_message(
-        pairs: &[(&str, &str)],
-        message: &str,
-    ) -> sentry::protocol::Event<'static> {
-        let mut event = event_with_tags(pairs);
-        event.message = Some(message.to_string());
-        event
-    }
-
-    #[test]
-    fn transient_filter_drops_429_408_502_503_504() {
-        for status in ["429", "408", "502", "503", "504"] {
-            let event = event_with_tags(&[
-                ("domain", "llm_provider"),
-                ("failure", "non_2xx"),
-                ("status", status),
-            ]);
-            assert!(
-                is_transient_provider_http_failure(&event),
-                "status {status} must be classified as transient and filtered"
-            );
-        }
-    }
-
-    #[test]
-    fn transient_filter_keeps_permanent_failures() {
-        for status in ["400", "401", "403", "404", "500"] {
-            let event = event_with_tags(&[
-                ("domain", "llm_provider"),
-                ("failure", "non_2xx"),
-                ("status", status),
-            ]);
-            assert!(
-                !is_transient_provider_http_failure(&event),
-                "status {status} must NOT be filtered — it's actionable"
-            );
-        }
-    }
-
-    #[test]
-    fn transient_filter_keeps_aggregate_all_exhausted() {
-        let event = event_with_tags(&[
-            ("domain", "llm_provider"),
-            ("failure", "all_exhausted"),
-            ("status", "503"),
-        ]);
-        assert!(
-            !is_transient_provider_http_failure(&event),
-            "aggregate all_exhausted events must surface (they are the cascade signal)"
-        );
-    }
-
-    #[test]
-    fn transient_filter_keeps_events_with_no_status_tag() {
-        let event = event_with_tags(&[("domain", "llm_provider"), ("failure", "non_2xx")]);
-        assert!(
-            !is_transient_provider_http_failure(&event),
-            "missing status tag must not be silently dropped"
-        );
-    }
-
-    // Regression guard: the filter must scope to provider events only. Other
-    // subsystems emit `failure=non_2xx` (e.g.
-    // `providers/compatible.rs` uses the same marker for OAI-compatible
-    // error paths, but every site goes through `report_error(..,
-    // "llm_provider", ..)` so the domain tag is consistent), but the broader
-    // point is: any future caller that re-uses the same tag set for a
-    // different domain must NOT be silently dropped by this filter.
-    #[test]
-    fn transient_filter_keeps_events_with_no_domain_tag() {
-        let event = event_with_tags(&[("failure", "non_2xx"), ("status", "503")]);
-        assert!(
-            !is_transient_provider_http_failure(&event),
-            "missing domain tag means the event isn't provider-originated — must surface"
-        );
-    }
-
-    #[test]
-    fn transient_filter_keeps_events_from_other_domains() {
-        let event = event_with_tags(&[
-            ("domain", "scheduler"),
-            ("failure", "non_2xx"),
-            ("status", "503"),
-        ]);
-        assert!(
-            !is_transient_provider_http_failure(&event),
-            "non-provider domain must surface even if failure/status tags collide"
-        );
-    }
-
-    #[test]
-    fn backend_api_filter_drops_transient_statuses() {
-        for status in TRANSIENT_HTTP_STATUSES {
-            let event = event_with_tags(&[
-                ("domain", "backend_api"),
-                ("failure", "non_2xx"),
-                ("status", status),
-            ]);
-            assert!(
-                is_transient_backend_api_failure(&event),
-                "backend status {status} must be classified as transient"
-            );
-        }
-    }
-
-    #[test]
-    fn backend_api_filter_drops_transient_transport_phrases() {
-        for phrase in TRANSIENT_TRANSPORT_PHRASES {
-            let event = event_with_tags_and_message(
-                &[("domain", "backend_api"), ("failure", "transport")],
-                &format!("GET /teams failed: {phrase}"),
-            );
-            assert!(
-                is_transient_backend_api_failure(&event),
-                "backend transport phrase {phrase} must be classified as transient"
-            );
-        }
-    }
-
-    #[test]
-    fn backend_api_filter_keeps_non_transient_failures() {
-        for status in ["404", "500"] {
-            let event = event_with_tags(&[
-                ("domain", "backend_api"),
-                ("failure", "non_2xx"),
-                ("status", status),
-            ]);
-            assert!(
-                !is_transient_backend_api_failure(&event),
-                "backend status {status} must stay visible"
-            );
-        }
-
-        let wrong_domain = event_with_tags(&[
-            ("domain", "scheduler"),
-            ("failure", "non_2xx"),
-            ("status", "503"),
-        ]);
-        assert!(
-            !is_transient_backend_api_failure(&wrong_domain),
-            "domain scoping must keep unrelated transient-shaped events visible"
-        );
-
-        let non_matching_transport = event_with_tags_and_message(
-            &[("domain", "backend_api"), ("failure", "transport")],
-            "GET /teams failed: certificate verify failed",
-        );
-        assert!(
-            !is_transient_backend_api_failure(&non_matching_transport),
-            "transport failures without an allowlisted phrase must stay visible"
-        );
-    }
-
-    #[test]
-    fn integrations_filter_drops_transient_statuses() {
-        for status in TRANSIENT_HTTP_STATUSES {
-            let event = event_with_tags(&[
-                ("domain", "integrations"),
-                ("failure", "non_2xx"),
-                ("status", status),
-            ]);
-            assert!(
-                is_transient_integrations_failure(&event),
-                "integrations status {status} must be classified as transient"
-            );
-        }
-    }
-
-    #[test]
-    fn integrations_filter_drops_transient_transport_phrases() {
-        for phrase in TRANSIENT_TRANSPORT_PHRASES {
-            let event = event_with_tags_and_message(
-                &[("domain", "integrations"), ("failure", "transport")],
-                &format!("GET /agent-integrations/tools failed: {phrase}"),
-            );
-            assert!(
-                is_transient_integrations_failure(&event),
-                "integrations transport phrase {phrase} must be classified as transient"
-            );
-        }
-    }
-
-    #[test]
-    fn integrations_filter_keeps_non_transient_failures() {
-        for status in ["404", "500"] {
-            let event = event_with_tags(&[
-                ("domain", "integrations"),
-                ("failure", "non_2xx"),
-                ("status", status),
-            ]);
-            assert!(
-                !is_transient_integrations_failure(&event),
-                "integrations status {status} must stay visible"
-            );
-        }
-
-        // Sibling-domain check: composio op-layer events MUST be silenced
-        // by the integrations filter — composio routes through the same
-        // `IntegrationClient` so the failure shape is identical, but
-        // op-level reporters that wrap and re-emit with their own domain
-        // tag would otherwise escape (OPENHUMAN-TAURI-35 / -2H).
-        let scheduler_domain = event_with_tags(&[
-            ("domain", "scheduler"),
-            ("failure", "non_2xx"),
-            ("status", "503"),
-        ]);
-        assert!(
-            !is_transient_integrations_failure(&scheduler_domain),
-            "domain scoping must keep unrelated transient-shaped events visible"
-        );
-
-        let non_matching_transport = event_with_tags_and_message(
-            &[("domain", "integrations"), ("failure", "transport")],
-            "GET /agent-integrations/tools failed: invalid certificate",
-        );
-        assert!(
-            !is_transient_integrations_failure(&non_matching_transport),
-            "transport failures without an allowlisted phrase must stay visible"
-        );
-    }
-
-    #[test]
-    fn composio_domain_routes_through_integrations_filter() {
-        // OPENHUMAN-TAURI-35 (~139 events) / -2H (~26 events):
-        // `[composio] list_connections failed: Backend returned 502 …` —
-        // composio op-layer wrappers (e.g. `composio_list_connections`) emit
-        // errors under `domain="composio"` so the original
-        // `domain="integrations"` filter let them through. Routing the
-        // composio domain through the same transient classifier closes
-        // that gap; the underlying transport / non_2xx semantics are
-        // identical because both layers share the same `IntegrationClient`.
-        for status in TRANSIENT_HTTP_STATUSES {
-            let event = event_with_tags(&[
-                ("domain", "composio"),
-                ("failure", "non_2xx"),
-                ("status", status),
-            ]);
-            assert!(
-                is_transient_integrations_failure(&event),
-                "composio status {status} must be classified as transient"
-            );
-        }
-
-        // Transport-phrase variant — composio also surfaces reqwest
-        // transport failures (timeouts, connection resets) once the op
-        // wrapper has tagged the event with `failure=transport`.
-        for phrase in TRANSIENT_TRANSPORT_PHRASES {
-            let event = event_with_tags_and_message(
-                &[("domain", "composio"), ("failure", "transport")],
-                &format!("[composio] execute failed: {phrase}"),
-            );
-            assert!(
-                is_transient_integrations_failure(&event),
-                "composio transport phrase {phrase} must be classified as transient"
-            );
-        }
-
-        // Non-transient composio statuses (404 / 500) must still surface —
-        // actionable bugs even when reported under the composio domain.
-        for status in ["404", "500"] {
-            let event = event_with_tags(&[
-                ("domain", "composio"),
-                ("failure", "non_2xx"),
-                ("status", status),
-            ]);
-            assert!(
-                !is_transient_integrations_failure(&event),
-                "composio status {status} must stay visible"
-            );
-        }
-    }
-
-    #[test]
-    fn updater_transient_403_is_dropped() {
-        let event = event_with_tags_and_message(
-            &[
-                ("domain", "update"),
-                ("operation", "check_releases"),
-                ("failure", "non_2xx"),
-                ("status", "403"),
-            ],
-            "[observability] update.check_releases failed: GitHub API error: 403 Forbidden",
-        );
-        assert!(
-            is_updater_transient_event(&event),
-            "GitHub 403 updater checks are unactionable transient/rate-limit noise"
-        );
-    }
-
-    #[test]
-    fn updater_transient_502_is_dropped() {
-        let event = event_with_tags_and_message(
-            &[
-                ("domain", "update.check_releases"),
-                ("failure", "non_2xx"),
-                ("status", "502"),
-            ],
-            "GitHub API error: 502 Bad Gateway",
-        );
-        assert!(
-            is_updater_transient_event(&event),
-            "GitHub 5xx updater checks must be filtered as transient"
-        );
-    }
-
-    #[test]
-    fn updater_real_panic_still_reported() {
-        let event = event_with_tags_and_message(
-            &[("domain", "update"), ("operation", "check_releases")],
-            "thread 'main' panicked at src/openhuman/update/core.rs: index out of bounds",
-        );
-        assert!(
-            !is_updater_transient_event(&event),
-            "update-domain events without a transient updater shape must still reach Sentry"
-        );
-    }
-
-    #[test]
-    fn message_failure_classifier_matches_canonical_status_phrases() {
-        for msg in [
-            "rpc.invoke_method failed: GET /teams failed (502 Bad Gateway)",
-            "GET /teams/me/usage failed (503 Service Unavailable)",
-            "downstream returned (504 Gateway Timeout): retry budget exhausted",
-            "OpenHuman API error (520 <unknown status code>): cf",
-            "POST /channels/telegram/typing failed (429 Too Many Requests)",
-            "auth connect failed: 503 Service Unavailable",
-        ] {
-            assert!(
-                is_transient_message_failure(msg),
-                "{msg:?} must be classified as transient"
-            );
-        }
-    }
-
-    #[test]
-    fn message_failure_classifier_matches_transport_phrases() {
-        for msg in [
-            "integrations.get failed: composio/tools → operation timed out",
-            "GET https://api.example.com → connection forcibly closed (os 10054)",
-            "POST /v1/foo → tls handshake eof",
-            "error sending request for url (https://api.example.com)",
-        ] {
-            assert!(
-                is_transient_message_failure(msg),
-                "{msg:?} must be classified as transient"
-            );
-        }
-    }
-
-    #[test]
-    fn message_failure_classifier_keeps_unrelated_messages() {
-        for msg in [
-            "rpc.invoke_method failed: schema validation error",
-            "process 502 exited unexpectedly",
-            "GET /teams failed (404 Not Found)",
-            "GET /teams failed (500 Internal Server Error)",
-            "unrelated error with port 5023",
-            "",
-        ] {
-            assert!(
-                !is_transient_message_failure(msg),
-                "{msg:?} must not be classified as transient"
-            );
-        }
-    }
-
-    #[test]
-    fn budget_filter_drops_budget_message_on_tagged_400() {
-        let event = event_with_tags_and_message(
-            &[("failure", "non_2xx"), ("status", "400")],
-            r#"OpenHuman API error (400 Bad Request): {"success":false,"error":"Insufficient budget"}"#,
-        );
-
-        assert!(is_budget_event(&event));
-    }
-
-    #[test]
-    fn budget_filter_drops_budget_exception_on_tagged_400() {
-        let mut event = event_with_tags(&[("failure", "non_2xx"), ("status", "400")]);
-        event.exception.values.push(sentry::protocol::Exception {
-            value: Some("Budget exceeded — add credits to continue".to_string()),
-            ..Default::default()
-        });
-
-        assert!(is_budget_event(&event));
-    }
-
-    #[test]
-    fn budget_filter_keeps_non_budget_400() {
-        let event = event_with_tags_and_message(
-            &[("failure", "non_2xx"), ("status", "400")],
-            "Bad request: missing field",
-        );
-
-        assert!(!is_budget_event(&event));
-    }
-
-    #[test]
-    fn budget_filter_requires_non_2xx_failure_and_400_status() {
-        let message = "Budget exceeded — add credits to continue";
-        for tags in [
-            vec![("failure", "transport"), ("status", "400")],
-            vec![("failure", "non_2xx"), ("status", "500")],
-            vec![("failure", "non_2xx")],
-        ] {
-            let event = event_with_tags_and_message(&tags, message);
-            assert!(!is_budget_event(&event));
-        }
-    }
-
     #[test]
     fn report_error_or_expected_does_not_panic() {
         report_error_or_expected(
@@ -2138,50 +1480,5 @@ mod tests {
             "provider_chat",
             &[("provider", "ollama")],
         );
-    }
-
-    fn event_with_message(msg: &str) -> sentry::protocol::Event<'static> {
-        let mut event = sentry::protocol::Event::default();
-        event.message = Some(msg.to_string());
-        event
-    }
-
-    fn event_with_exception_value(value: &str) -> sentry::protocol::Event<'static> {
-        let mut event = sentry::protocol::Event::default();
-        event.exception = vec![sentry::protocol::Exception {
-            value: Some(value.to_string()),
-            ..Default::default()
-        }]
-        .into();
-        event
-    }
-
-    #[test]
-    fn max_iterations_filter_matches_message_path() {
-        // `report_error_message` calls `sentry::capture_message`, which
-        // populates `event.message`. The filter must see the canonical
-        // phrase on that field path.
-        let event = event_with_message("Agent exceeded maximum tool iterations (8)");
-        assert!(is_max_iterations_event(&event));
-    }
-
-    #[test]
-    fn max_iterations_filter_matches_exception_path() {
-        // sentry-tracing with attach_stacktrace=true populates the
-        // exception list instead of (or in addition to) `event.message`.
-        // Filter must still catch the noise.
-        let event = event_with_exception_value(
-            "agent.run_single failed: Agent exceeded maximum tool iterations (10)",
-        );
-        assert!(is_max_iterations_event(&event));
-    }
-
-    #[test]
-    fn max_iterations_filter_keeps_unrelated_events() {
-        assert!(!is_max_iterations_event(&event_with_message(
-            "provider returned 503"
-        )));
-        assert!(!is_max_iterations_event(&event_with_message("")));
-        assert!(!is_max_iterations_event(&sentry::protocol::Event::default()));
     }
 }
