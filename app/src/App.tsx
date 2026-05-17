@@ -53,10 +53,6 @@ startCoreHealthMonitor();
 
 function App() {
   return (
-    <Sentry.ErrorBoundary
-      fallback={({ error, componentStack, resetError }) => (
-        <ErrorFallbackScreen error={error} componentStack={componentStack} onReset={resetError} />
-      )}>
       <Provider store={store}>
         <PersistGate loading={<PersistRehydrationScreen />} persistor={persistor}>
           <I18nProvider>
@@ -81,7 +77,6 @@ function App() {
           </I18nProvider>
         </PersistGate>
       </Provider>
-    </Sentry.ErrorBoundary>
   );
 }
 
@@ -98,8 +93,7 @@ function AppShell() {
   // [#1123] Commented out — welcome-agent onboarding replaced by Joyride walkthrough
   // const welcomeLocked = isWelcomeLocked(snapshot);
   const onOnboardingRoute = location.pathname.startsWith('/onboarding');
-  const onboardingPending =
-    !!snapshot.sessionToken && (DEV_FORCE_ONBOARDING || !snapshot.onboardingCompleted);
+  const onboardingPending = false;
 
   // Onboarding gate: while `onboarding_completed=false`, force any non-
   // onboarding route back to `/onboarding`. Once completed, bounce the
@@ -126,10 +120,7 @@ function AppShell() {
     navigate,
   ]);
 
-  // Track route changes as anonymous page views.
-  useEffect(() => {
-    trackPageView(location.pathname);
-  }, [location.pathname]);
+  // Telemetry removed.
 
   // [#1123] Commented out — welcome-agent onboarding replaced by Joyride walkthrough
   // After the welcome agent calls `complete_onboarding` and

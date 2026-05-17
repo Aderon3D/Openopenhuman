@@ -31,6 +31,8 @@ use crate::openhuman::inference::provider::ProviderRuntimeOptions;
 pub const PROVIDER_OPENHUMAN: &str = "openhuman";
 /// Prefix for Ollama-local providers: `"ollama:<model>"`.
 pub const OLLAMA_PROVIDER_PREFIX: &str = "ollama:";
+/// Prefix for LM Studio-local providers: `"lm_studio:<model>"`.
+pub const LM_STUDIO_PROVIDER_PREFIX: &str = "lm_studio:";
 
 /// Auth-profile storage key for a slug-keyed provider.
 ///
@@ -116,6 +118,18 @@ pub fn create_chat_provider_from_string(
             );
         }
         return make_ollama_provider(model.trim(), config);
+    }
+
+    if let Some(model) = p.strip_prefix(LM_STUDIO_PROVIDER_PREFIX) {
+        if model.trim().is_empty() {
+            anyhow::bail!(
+                "[chat-factory] provider string '{}' for role '{}' has an empty model — \
+                 use 'lm_studio:<model-id>'",
+                p,
+                role
+            );
+        }
+        return make_lm_studio_provider(model.trim(), config);
     }
 
     // New grammar: "<slug>:<model>"
@@ -217,6 +231,26 @@ fn make_ollama_provider(
         &endpoint,
         "",
         CompatAuthStyle::None,
+        &config.temperature_unsupported_models,
+    )?;
+    Ok((p, model.to_string()))
+}
+
+/// Build an LM Studio local provider.
+fn make_lm_studio_provider(
+    model: &str,
+    config: &Config,
+) -> anyhow::Result<(Box<dyn Provider>, String)> {
+    let endpoint = crate::openhuman::inference::local::lm_studio::lm_studio_base_url(config);
+    log::info!(
+        "[providers][chat-factory] building lm_studio provider model={} endpoint_host={}",
+        model,
+        redact_endpoint(&endpoint)
+    );
+    let p = make_openai_compatible_provider_with_config(
+        &endpoint,
+        config.local_ai.api_key.as_deref().unwrap_or(""),
+        CompatAuthStyle::Bearer,
         &config.temperature_unsupported_models,
     )?;
     Ok((p, model.to_string()))

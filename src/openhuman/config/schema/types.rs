@@ -393,7 +393,13 @@ impl Config {
             _ => None,
         }?;
         let trimmed = raw.trim();
-        let model = trimmed.strip_prefix("ollama:")?.trim();
+        let model = if let Some(m) = trimmed.strip_prefix("lm_studio:") {
+            m.trim()
+        } else if let Some(m) = trimmed.strip_prefix("ollama:") {
+            m.trim()
+        } else {
+            return None;
+        };
         if model.is_empty() {
             None
         } else {
@@ -532,14 +538,14 @@ impl Default for Config {
             local_ai: LocalAiConfig::default(),
             cloud_providers: Vec::new(),
             primary_cloud: None,
-            reasoning_provider: None,
-            agentic_provider: None,
-            coding_provider: None,
-            memory_provider: None,
-            embeddings_provider: None,
-            heartbeat_provider: None,
-            learning_provider: None,
-            subconscious_provider: None,
+            reasoning_provider: Some("lm_studio:reasoning-v1".to_string()),
+            agentic_provider: Some("lm_studio:agentic-v1".to_string()),
+            coding_provider: Some("lm_studio:coding-v1".to_string()),
+            memory_provider: Some("lm_studio:reasoning-v1".to_string()),
+            embeddings_provider: Some("lm_studio:bge-m3".to_string()),
+            heartbeat_provider: Some("lm_studio:reasoning-v1".to_string()),
+            learning_provider: Some("lm_studio:reasoning-v1".to_string()),
+            subconscious_provider: Some("lm_studio:reasoning-v1".to_string()),
             node: NodeConfig::default(),
             runtime_python: RuntimePythonConfig::default(),
             voice_server: VoiceServerConfig::default(),

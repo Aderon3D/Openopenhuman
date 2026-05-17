@@ -125,11 +125,11 @@ pub struct LocalAiConfig {
 }
 
 fn default_runtime_enabled() -> bool {
-    false
+    true
 }
 
 fn default_provider() -> String {
-    "ollama".to_string()
+    "lm_studio".to_string()
 }
 
 fn default_model_id() -> String {
